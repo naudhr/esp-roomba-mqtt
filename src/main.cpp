@@ -200,21 +200,6 @@ void mqttCallback(char *topic, byte *payload, unsigned int length) {
   }
 }
 
-#ifdef ENABLE_ADC_SLEEP
-float readADC(int samples) {
-  // Basic code to read from the ADC
-  int adc = 0;
-  for (int i = 0; i < samples; i++) {
-    delay(1);
-    adc += analogRead(A0);
-  }
-  adc = adc / samples;
-  float mV = adc * ADC_VOLTAGE_DIVIDER;
-  VLOG("ADC for %d is %.1fmV with %d samples\n", adc, mV, samples);
-  return mV;
-}
-#endif
-
 void debugCallback() {
   String cmd = Debug.getLastCommand();
 
@@ -254,11 +239,6 @@ void debugCallback() {
   } else if (cmd == "wake") {
     DLOG("Toggle BRC pin\n");
     wakeup();
-  } else if (cmd == "readadc") {
-#ifdef ENABLE_ADC_SLEEP
-    float adc = readADC(10);
-    DLOG("ADC voltage is %.1fmV\n", adc);
-#endif
   } else if (cmd == "streamresume") {
     DLOG("Resume streaming\n");
     roomba.streamCommand(Roomba::StreamCommandResume);
@@ -277,13 +257,13 @@ void debugCallback() {
 }
 
 void sleepIfNecessary() {
-#ifdef ENABLE_ADC_SLEEP
+#ifdef ENABLE_SLEEP
   // Check the battery, if it's too low, sleep the ESP (so we don't murder the battery)
-  float mV = readADC(10);
+  float mV = roombaState.voltage;
   // According to this post, you want to stop using NiMH batteries at about 0.9V per cell
   // https://electronics.stackexchange.com/a/35879 For a 12 cell battery like is in the Roomba,
   // That's 10.8 volts.
-  if (mV < 10800) {
+  if (mV < 10800 && mV != 0) {
     // Fire off a quick message with our most recent state, if MQTT is connected
     DLOG("Battery voltage is low (%.1fV). Sleeping for 10 minutes\n", mV / 1000);
     if (mqttClient.connected()) {
@@ -402,9 +382,6 @@ void setup() {
   // High-impedence on the BRC_PIN
   pinMode(BRC_PIN, INPUT);
 
-  // Sleep immediately if ENABLE_ADC_SLEEP and the battery is low
-  sleepIfNecessary();
-
   // Set Hostname.
   String hostname(HOSTNAME);
   WiFi.hostname(hostname);
@@ -433,7 +410,7 @@ void setup() {
 
   // Reset stream sensor values
   roomba.stream({}, 0);
-  delay(100);
+  delay(10000);
 
   // Request sensor stream
   roomba.stream(sensors, sizeof(sensors));

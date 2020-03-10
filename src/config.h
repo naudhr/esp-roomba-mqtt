@@ -7,8 +7,7 @@
 #define ROOMBA_500 1
 #endif
 
-#define ADC_VOLTAGE_DIVIDER 44.551316985
-//#define ENABLE_ADC_SLEEP
+#define ENABLE_SLEEP 1
 
 #define MQTT_SERVER "10.0.0.2"
 #define MQTT_USER "homeassistant"
