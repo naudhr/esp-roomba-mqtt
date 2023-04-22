@@ -64,8 +64,6 @@ bool OTAStarted;
 
 // MQTT setup
 PubSubClient mqttClient(wifiClient);
-const PROGMEM char *commandTopic = MQTT_COMMAND_TOPIC;
-const PROGMEM char *statusTopic = MQTT_STATE_TOPIC;
 
 void wakeup() {
 #ifndef ROOMBA_500
@@ -151,7 +149,7 @@ bool performCommand(const char *cmdchar) {
     DLOG("Turning off\n");
     roomba.power();
     roombaState.cleaning = false;
-  } else if (cmd == "toggle" || cmd == "start_pause") {
+  } else if (cmd == "start" || cmd == "pause") {
     DLOG("Toggling\n");
     roomba.cover();
     roombaState.cleaning = !roombaState.cleaning;
@@ -175,6 +173,7 @@ bool performCommand(const char *cmdchar) {
   } else if (cmd == "locate") {
     DLOG("Locating\n");
     // TODO
+    //roomba.playSong(0);
   } else if (cmd == "return_to_base") {
     DLOG("Returning to Base\n");
     roombaStop();
@@ -186,18 +185,40 @@ bool performCommand(const char *cmdchar) {
   return true;
 }
 
+static char const* getEntityID() {
+  // build entity_id
+  byte MAC[6];
+  WiFi.macAddress(MAC);
+  char MACc[30];
+  sprintf(MACc, "%02X%02X%02X%02X%02X%02X", MAC[0], MAC[1], MAC[2], MAC[3], MAC[4], MAC[5]);
+  static char entityID[50];
+  snprintf(entityID, std::size(entityID), "%s%s", MQTT_IDPREFIX, MACc);
+  // avoid confusions with lower/upper case differences in IDs
+  return strlwr(entityID);
+}
+
+static char const* getMQTTTopic(char const* topic) {
+  // build mqtt target topic
+  static char mqttTopic[200];
+  snprintf(mqttTopic, std::size(mqttTopic), "%s%s%s%s", MQTT_TOPIC_BASE, getEntityID(), MQTT_DIVIDER, topic);
+  return mqttTopic;
+}
+
 void mqttCallback(char *topic, byte *payload, unsigned int length) {
   DLOG("Received mqtt callback for topic %s\n", topic);
-  if (strcmp(commandTopic, topic) == 0) {
+  if (strcmp(getMQTTTopic(MQTT_COMMAND_TOPIC), topic) == 0) {
+    if(length >= MQTT_MAX_PACKET_SIZE) {
+      DLOG("payload length %u is greater than MQTT_MAX_PACKET_SIZE of %i", length, MQTT_MAX_PACKET_SIZE);
+      return;
+    }
     // turn payload into a null terminated string
-    char *cmd = (char *)malloc(length + 1);
+    char cmd[MQTT_MAX_PACKET_SIZE];
     memcpy(cmd, payload, length);
     cmd[length] = 0;
 
     if(!performCommand(cmd)) {
       DLOG("Unknown command %s\n", cmd);
     }
-    free(cmd);
   }
 }
 
@@ -279,7 +300,7 @@ void sleepIfNecessary() {
       root["charge"] = 0;
       String jsonStr;
       serializeJson(root, jsonStr);
-      mqttClient.publish(statusTopic, jsonStr.c_str(), true);
+      mqttClient.publish(getMQTTTopic(MQTT_STATE_TOPIC), jsonStr.c_str(), true);
     }
     delay(200);
 
@@ -341,22 +362,24 @@ bool parseRoombaStateFromStreamPacket(uint8_t *packet, int length, RoombaState *
   }
   return true;
 }
-
-void verboseLogPacket(uint8_t *packet, uint8_t length) {
+#if LOGGING
+static void verboseLogPacket(uint8_t *packet, uint8_t length) {
     VLOG("Packet: ");
     for (int i = 0; i < length; i++) {
       VLOG("%d ", packet[i]);
     }
     VLOG("\n");
 }
-
+#endif // LOGGING
 void readSensorPacket() {
   uint8_t packetLength;
   bool received = roomba.pollSensors(roombaPacket, sizeof(roombaPacket), &packetLength);
   if (received) {
     RoombaState rs = {};
     bool parsed = parseRoombaStateFromStreamPacket(roombaPacket, packetLength, &rs);
+#if LOGGING
     verboseLogPacket(roombaPacket, packetLength);
+#endif // LOGGING
     if (parsed) {
       roombaState = rs;
       VLOG("Got Packet of len=%d! Distance:%dmm ChargingState:%d Voltage:%dmV Current:%dmA Charge:%dmAh Capacity:%dmAh\n", packetLength, roombaState.distance, roombaState.chargingState, roombaState.voltage, roombaState.current, roombaState.charge, roombaState.capacity);
@@ -388,12 +411,11 @@ void setup() {
   String hostname(HOSTNAME);
   WiFi.hostname(hostname);
   WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
-
   while (WiFi.status() != WL_CONNECTED) {
     delay(500);
   }
 
-  ArduinoOTA.setHostname((const char *)hostname.c_str());
+  ArduinoOTA.setHostname(hostname.c_str());
   ArduinoOTA.begin();
   ArduinoOTA.onStart(onOTAStart);
 
@@ -401,7 +423,7 @@ void setup() {
   mqttClient.setCallback(mqttCallback);
 
   #if LOGGING
-  Debug.begin((const char *)hostname.c_str());
+  Debug.begin(hostname.c_str());
   Debug.setResetCmdEnabled(true);
   Debug.setCallBackProjectCmds(debugCallback);
   Debug.setSerialEnabled(false);
@@ -423,10 +445,38 @@ void reconnect() {
   // Attempt to connect
   if (mqttClient.connect(HOSTNAME, MQTT_USER, MQTT_PASSWORD)) {
     DLOG("MQTT connected\n");
-    mqttClient.subscribe(commandTopic);
+    mqttClient.subscribe(getMQTTTopic(MQTT_COMMAND_TOPIC));
   } else {
     DLOG("MQTT failed rc=%d try again in 5 seconds\n", mqttClient.state());
   }
+}
+
+void sendConfig() {
+  if (!mqttClient.connected()) {
+    DLOG("MQTT Disconnected, not sending config\n");
+    return;
+  }
+  StaticJsonDocument<500> root;
+  root["name"] = getEntityID();
+  root["unique_id"] = getEntityID();
+  root["schema"] = "state";
+  char baseTopic[200];
+  sprintf(baseTopic, "%s%s", MQTT_TOPIC_BASE, getEntityID());
+  root["~"] = baseTopic;
+  root["stat_t"] = String("~/") + MQTT_STATE_TOPIC;
+  root["cmd_t"] = String("~/") + MQTT_COMMAND_TOPIC;
+  root["send_cmd_t"] = String("~/") + MQTT_COMMAND_TOPIC;
+  root["json_attr_t"] = String("~/") + MQTT_STATE_TOPIC;
+  root["sup_feat"][0] = "start";
+  root["sup_feat"][1] = "stop";
+  root["sup_feat"][2] = "pause";
+  root["sup_feat"][3] = "return_home";
+  root["sup_feat"][4] = "locate";
+  root["sup_feat"][5] = "clean_spot";
+  String jsonStr;
+  serializeJson(root, jsonStr);
+  DLOG("Reporting config: %s\n", jsonStr.c_str());
+  mqttClient.publish(getMQTTTopic(MQTT_CONFIG_TOPIC), jsonStr.c_str());
 }
 
 void sendStatus() {
@@ -445,19 +495,30 @@ void sendStatus() {
   root["voltage"] = roombaState.voltage;
   root["current"] = roombaState.current;
   root["charge"] = roombaState.charge;
+  String curState = "idle";
+  if (roombaState.docked) {
+    curState = "docked";
+  } else {
+    if (roombaState.cleaning) {
+      curState = "cleaning";
+    }
+  }
+  root["state"] = curState;
   String jsonStr;
   serializeJson(root, jsonStr);
-  mqttClient.publish(statusTopic, jsonStr.c_str());
+  DLOG("Reporting status: %s\n", jsonStr.c_str());
+  mqttClient.publish(getMQTTTopic(MQTT_STATE_TOPIC), jsonStr.c_str());
 }
 
-long lastStateMsgTime = 0;
-long lastWakeupTime = 0;
-long lastConnectTime = 0;
+int lastStateMsgTime = 0;
+int lastWakeupTime = 0;
+int lastConnectTime = 0;
+int configLoop = 0;
 #ifdef ROOMBA_500
   // Wake up every 5 hours. Just to update battery level.
-  long wakeupInterval = 18e7;
+  int wakeupInterval = 18000000;
 #else
-  long wakeupInterval = 50000;
+  int wakeupInterval = 50000;
 #endif
 
 void loop() {
@@ -475,10 +536,21 @@ void loop() {
 
   long now = millis();
   // If MQTT client can't connect to broker, then reconnect
-  if (!mqttClient.connected() && (now - lastConnectTime) > 5000) {
-    DLOG("Reconnecting MQTT\n");
+  if ((now - lastConnectTime) > 5000) {
     lastConnectTime = now;
-    reconnect();
+    if (!mqttClient.connected()) {
+      DLOG("Reconnecting MQTT\n");
+      reconnect();
+      sendConfig();
+    } else {
+      // resend config every now and then to reconfigure entity e.g. in case homeassistant has been restarted
+      if (configLoop == 19) {
+        sendConfig();
+        configLoop = 0;
+      } else {
+        configLoop++;
+      }
+    }
   }
   // Wakeup the roomba at fixed intervals
   if (now - lastWakeupTime > wakeupInterval) {
