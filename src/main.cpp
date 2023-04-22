@@ -19,6 +19,7 @@ extern "C" {
 RemoteDebug Debug;
 #else
 #define DLOG(msg, ...)
+#define VLOG(msg, ...)
 #endif
 
 // Roomba setup
@@ -200,6 +201,7 @@ void mqttCallback(char *topic, byte *payload, unsigned int length) {
   }
 }
 
+#if LOGGING
 void debugCallback() {
   String cmd = Debug.getLastCommand();
 
@@ -255,6 +257,7 @@ void debugCallback() {
     DLOG("Unknown command %s\n", cmd.c_str());
   }
 }
+#endif // LOGGING
 
 void sleepIfNecessary() {
 #ifdef ENABLE_SLEEP
@@ -403,7 +406,7 @@ void setup() {
   Debug.setResetCmdEnabled(true);
   Debug.setCallBackProjectCmds(debugCallback);
   Debug.setSerialEnabled(false);
-  #endif
+  #endif // LOGGING
   
   roomba.start();
   delay(100);
@@ -463,7 +466,9 @@ void loop() {
   // Important callbacks that _must_ happen every cycle
   ArduinoOTA.handle();
   yield();
+  #if LOGGING
   Debug.handle();
+  #endif // LOGGING
 
   // Skip all other logic if we're running an OTA update
   if (OTAStarted) {
