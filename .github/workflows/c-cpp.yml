@@ -15,5 +15,17 @@ jobs:
     - uses: actions/checkout@v3
     - name: install pio
       run: pip3 install -U platformio
+    - name: prepare src
+      run: cp src/secrets.example.h src/secrets.h
     - name: build
       run: pio run
+    - name: Cache
+      uses: actions/cache@v2.1.8
+      with:
+        path: .pio
+        # An explicit key for restoring and saving the cache
+        key: platformio_built
+        ## An ordered list of keys to use for restoring the cache if no cache hit occurred for key
+        #restore-keys: # optional
+        ## The chunk size used to split up large files during upload, in bytes
+        #upload-chunk-size: # optional
